@@ -192,7 +192,10 @@ include(ThirdpartyToolchain)
 
 # Add common flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_COMMON_FLAGS}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ARROW_CXXFLAGS}")
+# Added permissive flag to circumvent g++ version 7 error
+# in /usr/include/boost/multiprecision/cpp_int.hpp
+# which is included from cpp/src/arrow/util/decimal.h:30
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ARROW_CXXFLAGS} -fpermissive")
 
 message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 
