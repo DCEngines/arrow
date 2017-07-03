@@ -320,17 +320,21 @@ cdef tuple _dataframe_to_arrays(
     cdef:
         list names = []
         list arrays = []
-        list index_levels = []
+        list index_columns = []
         DataType type = None
         dict metadata
+        Py_ssize_t i
+        Py_ssize_t n
 
     if preserve_index:
-        index_levels.extend(getattr(df.index, 'levels', [df.index]))
+        n = len(getattr(df.index, 'levels', [df.index]))
+        index_columns.extend(df.index.get_level_values(i) for i in range(n))
 
     for name in df.columns:
         col = df[name]
         if schema is not None:
-            type = schema.field_by_name(name).type
+            field = schema.field_by_name(name)
+            type = getattr(field, "type", None)
 
         arr = arrays.append(
             Array.from_pandas(
@@ -339,13 +343,13 @@ cdef tuple _dataframe_to_arrays(
         )
         names.append(name)
 
-    for i, level in enumerate(index_levels):
+    for i, column in enumerate(index_columns):
         arrays.append(
-            Array.from_pandas(level, timestamps_to_ms=timestamps_to_ms)
+            Array.from_pandas(column, timestamps_to_ms=timestamps_to_ms)
         )
-        names.append(pdcompat.index_level_name(level, i))
+        names.append(pdcompat.index_level_name(column, i))
 
-    metadata = pdcompat.construct_metadata(df, index_levels, preserve_index)
+    metadata = pdcompat.construct_metadata(df, index_columns, preserve_index)
     return names, arrays, metadata
 
 

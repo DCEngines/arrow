@@ -59,7 +59,7 @@ from pyarrow.lib import (null, bool_,
                          DictionaryArray,
                          Date32Array, Date64Array,
                          TimestampArray, Time32Array, Time64Array,
-                         DecimalArray,
+                         DecimalArray, StructArray,
                          ArrayValue, Scalar, NA, NAType,
                          BooleanValue,
                          Int8Value, Int16Value, Int32Value, Int64Value,
@@ -88,15 +88,6 @@ from pyarrow.lib import (ArrowException,
                          ArrowMemoryError,
                          ArrowNotImplementedError,
                          ArrowTypeError)
-
-
-def jemalloc_memory_pool():
-    """
-    Returns a jemalloc-based memory allocator, which can be passed to
-    pyarrow.set_memory_pool
-    """
-    from pyarrow._jemalloc import default_pool
-    return default_pool()
 
 
 from pyarrow.filesystem import Filesystem, HdfsClient, LocalFilesystem

@@ -362,23 +362,25 @@ class PandasConverter {
   Status Visit(const Time32Type& type) { return VisitNative<Int32Type>(); }
   Status Visit(const Time64Type& type) { return VisitNative<Int64Type>(); }
 
-  Status Visit(const NullType& type) { return Status::NotImplemented("null"); }
+  Status TypeNotImplemented(std::string type_name) {
+    std::stringstream ss;
+    ss << "PandasConverter doesn't implement <" << type_name << "> conversion. ";
+    return Status::NotImplemented(ss.str());
+  }
 
-  Status Visit(const BinaryType& type) { return Status::NotImplemented(type.ToString()); }
+  Status Visit(const NullType& type) { return TypeNotImplemented(type.ToString()); }
+
+  Status Visit(const BinaryType& type) { return TypeNotImplemented(type.ToString()); }
 
   Status Visit(const FixedSizeBinaryType& type) {
-    return Status::NotImplemented(type.ToString());
+    return TypeNotImplemented(type.ToString());
   }
 
-  Status Visit(const DecimalType& type) {
-    return Status::NotImplemented(type.ToString());
-  }
+  Status Visit(const DecimalType& type) { return TypeNotImplemented(type.ToString()); }
 
-  Status Visit(const DictionaryType& type) {
-    return Status::NotImplemented(type.ToString());
-  }
+  Status Visit(const DictionaryType& type) { return TypeNotImplemented(type.ToString()); }
 
-  Status Visit(const NestedType& type) { return Status::NotImplemented(type.ToString()); }
+  Status Visit(const NestedType& type) { return TypeNotImplemented(type.ToString()); }
 
   Status Convert() {
     if (PyArray_NDIM(arr_) != 1) {
@@ -545,12 +547,14 @@ Status PandasConverter::ConvertDates() {
   return date_builder.Finish(&out_);
 }
 
-#define CONVERT_DECIMAL_CASE(bit_width, builder, object)      \
-  case bit_width: {                                           \
-    decimal::Decimal##bit_width d;                            \
-    RETURN_NOT_OK(PythonDecimalToArrowDecimal((object), &d)); \
-    RETURN_NOT_OK((builder).Append(d));                       \
-    break;                                                    \
+#define CONVERT_DECIMAL_CASE(bit_width, builder, object)         \
+  case bit_width: {                                              \
+    decimal::Decimal##bit_width d;                               \
+    std::string string_out;                                      \
+    RETURN_NOT_OK(PythonDecimalToString((object), &string_out)); \
+    RETURN_NOT_OK(FromString(string_out, &d));                   \
+    RETURN_NOT_OK((builder).Append(d));                          \
+    break;                                                       \
   }
 
 Status PandasConverter::ConvertDecimals() {
@@ -953,7 +957,7 @@ inline Status PandasConverter::ConvertTypedLists(const std::shared_ptr<DataType>
         ss << inferred_type->ToString() << " cannot be converted to " << type->ToString();
         return Status::TypeError(ss.str());
       }
-      RETURN_NOT_OK(AppendPySequence(objects[i], type, value_builder));
+      RETURN_NOT_OK(AppendPySequence(objects[i], type, value_builder, size));
     } else {
       return Status::TypeError("Unsupported Python type for list items");
     }
@@ -1002,7 +1006,7 @@ inline Status PandasConverter::ConvertTypedLists<NPY_OBJECT, StringType>(
         ss << inferred_type->ToString() << " cannot be converted to STRING.";
         return Status::TypeError(ss.str());
       }
-      RETURN_NOT_OK(AppendPySequence(objects[i], inferred_type, value_builder));
+      RETURN_NOT_OK(AppendPySequence(objects[i], inferred_type, value_builder, size));
     } else {
       return Status::TypeError("Unsupported Python type for list items");
     }
@@ -1305,6 +1309,21 @@ inline Status ConvertBinaryLike(const ChunkedArray& data, PyObject** out_values)
   return Status::OK();
 }
 
+inline Status ConvertNulls(const ChunkedArray& data, PyObject** out_values) {
+  PyAcquireGIL lock;
+  for (int c = 0; c < data.num_chunks(); c++) {
+    std::shared_ptr<Array> arr = data.chunk(c);
+
+    for (int64_t i = 0; i < arr->length(); ++i) {
+      // All values are null
+      Py_INCREF(Py_None);
+      *out_values = Py_None;
+      ++out_values;
+    }
+  }
+  return Status::OK();
+}
+
 inline Status ConvertFixedSizeBinary(const ChunkedArray& data, PyObject** out_values) {
   PyAcquireGIL lock;
   for (int c = 0; c < data.num_chunks(); c++) {
@@ -1328,6 +1347,66 @@ inline Status ConvertFixedSizeBinary(const ChunkedArray& data, PyObject** out_va
              << std::string(reinterpret_cast<const char*>(data_ptr), length) << " failed";
           return Status::UnknownError(ss.str());
         }
+      }
+      ++out_values;
+    }
+  }
+  return Status::OK();
+}
+
+inline Status ConvertStruct(const ChunkedArray& data, PyObject** out_values) {
+  PyAcquireGIL lock;
+  if (data.num_chunks() <= 0) { return Status::OK(); }
+  // ChunkedArray has at least one chunk
+  auto arr = static_cast<const StructArray*>(data.chunk(0).get());
+  // Use it to cache the struct type and number of fields for all chunks
+  auto num_fields = arr->fields().size();
+  auto array_type = arr->type();
+  std::vector<OwnedRef> fields_data(num_fields);
+  OwnedRef dict_item;
+  for (int c = 0; c < data.num_chunks(); c++) {
+    auto arr = static_cast<const StructArray*>(data.chunk(c).get());
+    // Convert the struct arrays first
+    for (size_t i = 0; i < num_fields; i++) {
+      PyObject* numpy_array;
+      RETURN_NOT_OK(
+          ConvertArrayToPandas(arr->field(static_cast<int>(i)), nullptr, &numpy_array));
+      fields_data[i].reset(numpy_array);
+    }
+
+    // Construct a dictionary for each row
+    const bool has_nulls = data.null_count() > 0;
+    for (int64_t i = 0; i < arr->length(); ++i) {
+      if (has_nulls && arr->IsNull(i)) {
+        Py_INCREF(Py_None);
+        *out_values = Py_None;
+      } else {
+        // Build the new dict object for the row
+        dict_item.reset(PyDict_New());
+        RETURN_IF_PYERROR();
+        for (size_t field_idx = 0; field_idx < num_fields; ++field_idx) {
+          OwnedRef field_value;
+          auto name = array_type->child(static_cast<int>(field_idx))->name();
+          if (!arr->field(static_cast<int>(field_idx))->IsNull(i)) {
+            // Value exists in child array, obtain it
+            auto array = reinterpret_cast<PyArrayObject*>(fields_data[field_idx].obj());
+            auto ptr = reinterpret_cast<const char*>(PyArray_GETPTR1(array, i));
+            field_value.reset(PyArray_GETITEM(array, ptr));
+            RETURN_IF_PYERROR();
+          } else {
+            // Translate the Null to a None
+            Py_INCREF(Py_None);
+            field_value.reset(Py_None);
+          }
+          // PyDict_SetItemString does not steal the value reference
+          auto setitem_result =
+              PyDict_SetItemString(dict_item.obj(), name.c_str(), field_value.obj());
+          RETURN_IF_PYERROR();
+          DCHECK_EQ(setitem_result, 0);
+        }
+        *out_values = dict_item.obj();
+        // Grant ownership to the resulting array
+        Py_INCREF(*out_values);
       }
       ++out_values;
     }
@@ -1457,6 +1536,8 @@ class ObjectBlock : public PandasBlock {
       RETURN_NOT_OK(ConvertFixedSizeBinary(data, out_buffer));
     } else if (type == Type::DECIMAL) {
       RETURN_NOT_OK(ConvertDecimals(data, out_buffer));
+    } else if (type == Type::NA) {
+      RETURN_NOT_OK(ConvertNulls(data, out_buffer));
     } else if (type == Type::LIST) {
       auto list_type = std::static_pointer_cast<ListType>(col->type());
       switch (list_type->value_type()->id()) {
@@ -1478,6 +1559,8 @@ class ObjectBlock : public PandasBlock {
           return Status::NotImplemented(ss.str());
         }
       }
+    } else if (type == Type::STRUCT) {
+      RETURN_NOT_OK(ConvertStruct(data, out_buffer));
     } else {
       std::stringstream ss;
       ss << "Unsupported type for object array output: " << col->type()->ToString();
@@ -1506,7 +1589,12 @@ class IntBlock : public PandasBlock {
 
     const ChunkedArray& data = *col->data().get();
 
-    if (type != ARROW_TYPE) { return Status::NotImplemented(col->type()->ToString()); }
+    if (type != ARROW_TYPE) {
+      std::stringstream ss;
+      ss << "Cannot write Arrow data of type " << col->type()->ToString();
+      ss << " to a Pandas int" << sizeof(C_TYPE) << " block.";
+      return Status::NotImplemented(ss.str());
+    }
 
     ConvertIntegerNoNullsSameType<C_TYPE>(data, out_buffer);
     placement_data_[rel_placement] = abs_placement;
@@ -1532,7 +1620,12 @@ class Float32Block : public PandasBlock {
       int64_t rel_placement) override {
     Type::type type = col->type()->id();
 
-    if (type != Type::FLOAT) { return Status::NotImplemented(col->type()->ToString()); }
+    if (type != Type::FLOAT) {
+      std::stringstream ss;
+      ss << "Cannot write Arrow data of type " << col->type()->ToString();
+      ss << " to a Pandas float32 block.";
+      return Status::NotImplemented(ss.str());
+    }
 
     float* out_buffer = reinterpret_cast<float*>(block_data_) + rel_placement * num_rows_;
 
@@ -1584,7 +1677,10 @@ class Float64Block : public PandasBlock {
         ConvertNumericNullable<double>(data, NAN, out_buffer);
         break;
       default:
-        return Status::NotImplemented(col->type()->ToString());
+        std::stringstream ss;
+        ss << "Cannot write Arrow data of type " << col->type()->ToString();
+        ss << " to a Pandas float64 block.";
+        return Status::NotImplemented(ss.str());
     }
 
 #undef INTEGER_CASE
@@ -1603,7 +1699,12 @@ class BoolBlock : public PandasBlock {
       int64_t rel_placement) override {
     Type::type type = col->type()->id();
 
-    if (type != Type::BOOL) { return Status::NotImplemented(col->type()->ToString()); }
+    if (type != Type::BOOL) {
+      std::stringstream ss;
+      ss << "Cannot write Arrow data of type " << col->type()->ToString();
+      ss << " to a Pandas boolean block.";
+      return Status::NotImplemented(ss.str());
+    }
 
     uint8_t* out_buffer =
         reinterpret_cast<uint8_t*>(block_data_) + rel_placement * num_rows_;
@@ -1660,7 +1761,10 @@ class DatetimeBlock : public PandasBlock {
         return Status::NotImplemented("Unsupported time unit");
       }
     } else {
-      return Status::NotImplemented(col->type()->ToString());
+      std::stringstream ss;
+      ss << "Cannot write Arrow data of type " << col->type()->ToString();
+      ss << " to a Pandas datetime block.";
+      return Status::NotImplemented(ss.str());
     }
 
     placement_data_[rel_placement] = abs_placement;
@@ -1917,8 +2021,15 @@ class DataFrameBlockCreator {
         case Type::DECIMAL:
           output_type = PandasBlock::DECIMAL;
           break;
+        case Type::NA:
+        case Type::STRUCT:
+          output_type = PandasBlock::OBJECT;
+          break;
         default:
-          return Status::NotImplemented(col->type()->ToString());
+          std::stringstream ss;
+          ss << "No known equivalent Pandas block for Arrow data of type ";
+          ss << col->type()->ToString() << " is known.";
+          return Status::NotImplemented(ss.str());
       }
 
       int block_placement = 0;
@@ -2301,9 +2412,17 @@ class ArrowDeserializer {
     return Status::OK();
   }
 
-  Status Visit(const NullType& type) { return Status::NotImplemented("null type"); }
+  Status Visit(const NullType& type) {
+    RETURN_NOT_OK(AllocateOutput(NPY_OBJECT));
+    auto out_values = reinterpret_cast<PyObject**>(PyArray_DATA(arr_));
+    return ConvertNulls(data_, out_values);
+  }
 
-  Status Visit(const StructType& type) { return Status::NotImplemented("struct type"); }
+  Status Visit(const StructType& type) {
+    AllocateOutput(NPY_OBJECT);
+    auto out_values = reinterpret_cast<PyObject**>(PyArray_DATA(arr_));
+    return ConvertStruct(data_, out_values);
+  }
 
   Status Visit(const UnionType& type) { return Status::NotImplemented("union type"); }
 

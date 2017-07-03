@@ -95,6 +95,16 @@ TEST_F(TestArray, TestEquality) {
   EXPECT_FALSE(array->RangeEquals(1, 2, 1, unequal_array));
 }
 
+TEST_F(TestArray, TestNullArrayEquality) {
+  auto array_1 = std::make_shared<NullArray>(10);
+  auto array_2 = std::make_shared<NullArray>(10);
+  auto array_3 = std::make_shared<NullArray>(20);
+
+  EXPECT_TRUE(array_1->Equals(array_1));
+  EXPECT_TRUE(array_1->Equals(array_2));
+  EXPECT_FALSE(array_1->Equals(array_3));
+}
+
 TEST_F(TestArray, SliceRecomputeNullCount) {
   vector<uint8_t> valid_bytes = {1, 0, 1, 1, 0, 1, 0, 0, 0};
 
@@ -1255,6 +1265,371 @@ TEST_F(TestFWBinaryArray, Slice) {
   slice2 = array->Slice(1, 3);
   ASSERT_TRUE(slice->Equals(slice2));
   ASSERT_TRUE(array->RangeEquals(1, 3, 0, slice));
+}
+
+// ----------------------------------------------------------------------
+// AdaptiveInt tests
+
+class TestAdaptiveIntBuilder : public TestBuilder {
+ public:
+  void SetUp() {
+    TestBuilder::SetUp();
+    builder_ = std::make_shared<AdaptiveIntBuilder>(pool_);
+  }
+
+  void Done() { EXPECT_OK(builder_->Finish(&result_)); }
+
+ protected:
+  std::shared_ptr<AdaptiveIntBuilder> builder_;
+
+  std::shared_ptr<Array> expected_;
+  std::shared_ptr<Array> result_;
+};
+
+TEST_F(TestAdaptiveIntBuilder, TestInt8) {
+  builder_->Append(0);
+  builder_->Append(127);
+  builder_->Append(-128);
+
+  Done();
+
+  std::vector<int8_t> expected_values({0, 127, -128});
+  ArrayFromVector<Int8Type, int8_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveIntBuilder, TestInt16) {
+  builder_->Append(0);
+  builder_->Append(128);
+  Done();
+
+  std::vector<int16_t> expected_values({0, 128});
+  ArrayFromVector<Int16Type, int16_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(-129);
+  expected_values = {-129};
+  Done();
+
+  ArrayFromVector<Int16Type, int16_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<int16_t>::max());
+  builder_->Append(std::numeric_limits<int16_t>::min());
+  expected_values = {
+      std::numeric_limits<int16_t>::max(), std::numeric_limits<int16_t>::min()};
+  Done();
+
+  ArrayFromVector<Int16Type, int16_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveIntBuilder, TestInt32) {
+  builder_->Append(0);
+  builder_->Append(static_cast<int64_t>(std::numeric_limits<int16_t>::max()) + 1);
+  Done();
+
+  std::vector<int32_t> expected_values(
+      {0, static_cast<int32_t>(std::numeric_limits<int16_t>::max()) + 1});
+  ArrayFromVector<Int32Type, int32_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(static_cast<int64_t>(std::numeric_limits<int16_t>::min()) - 1);
+  expected_values = {static_cast<int32_t>(std::numeric_limits<int16_t>::min()) - 1};
+  Done();
+
+  ArrayFromVector<Int32Type, int32_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<int32_t>::max());
+  builder_->Append(std::numeric_limits<int32_t>::min());
+  expected_values = {
+      std::numeric_limits<int32_t>::max(), std::numeric_limits<int32_t>::min()};
+  Done();
+
+  ArrayFromVector<Int32Type, int32_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveIntBuilder, TestInt64) {
+  builder_->Append(0);
+  builder_->Append(static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1);
+  Done();
+
+  std::vector<int64_t> expected_values(
+      {0, static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1});
+  ArrayFromVector<Int64Type, int64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(static_cast<int64_t>(std::numeric_limits<int32_t>::min()) - 1);
+  expected_values = {static_cast<int64_t>(std::numeric_limits<int32_t>::min()) - 1};
+  Done();
+
+  ArrayFromVector<Int64Type, int64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<int64_t>::max());
+  builder_->Append(std::numeric_limits<int64_t>::min());
+  expected_values = {
+      std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min()};
+  Done();
+
+  ArrayFromVector<Int64Type, int64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveIntBuilder, TestAppendVector) {
+  std::vector<int64_t> expected_values(
+      {0, static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1});
+  builder_->Append(expected_values.data(), expected_values.size());
+  Done();
+
+  ArrayFromVector<Int64Type, int64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+class TestAdaptiveUIntBuilder : public TestBuilder {
+ public:
+  void SetUp() {
+    TestBuilder::SetUp();
+    builder_ = std::make_shared<AdaptiveUIntBuilder>(pool_);
+  }
+
+  void Done() { EXPECT_OK(builder_->Finish(&result_)); }
+
+ protected:
+  std::shared_ptr<AdaptiveUIntBuilder> builder_;
+
+  std::shared_ptr<Array> expected_;
+  std::shared_ptr<Array> result_;
+};
+
+TEST_F(TestAdaptiveUIntBuilder, TestUInt8) {
+  builder_->Append(0);
+  builder_->Append(255);
+
+  Done();
+
+  std::vector<uint8_t> expected_values({0, 255});
+  ArrayFromVector<UInt8Type, uint8_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveUIntBuilder, TestUInt16) {
+  builder_->Append(0);
+  builder_->Append(256);
+  Done();
+
+  std::vector<uint16_t> expected_values({0, 256});
+  ArrayFromVector<UInt16Type, uint16_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<uint16_t>::max());
+  expected_values = {std::numeric_limits<uint16_t>::max()};
+  Done();
+
+  ArrayFromVector<UInt16Type, uint16_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveUIntBuilder, TestUInt32) {
+  builder_->Append(0);
+  builder_->Append(static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 1);
+  Done();
+
+  std::vector<uint32_t> expected_values(
+      {0, static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1});
+  ArrayFromVector<UInt32Type, uint32_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<uint32_t>::max());
+  expected_values = {std::numeric_limits<uint32_t>::max()};
+  Done();
+
+  ArrayFromVector<UInt32Type, uint32_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveUIntBuilder, TestUInt64) {
+  builder_->Append(0);
+  builder_->Append(static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1);
+  Done();
+
+  std::vector<uint64_t> expected_values(
+      {0, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1});
+  ArrayFromVector<UInt64Type, uint64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+
+  SetUp();
+  builder_->Append(std::numeric_limits<uint64_t>::max());
+  expected_values = {std::numeric_limits<uint64_t>::max()};
+  Done();
+
+  ArrayFromVector<UInt64Type, uint64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+TEST_F(TestAdaptiveUIntBuilder, TestAppendVector) {
+  std::vector<uint64_t> expected_values(
+      {0, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1});
+  builder_->Append(expected_values.data(), expected_values.size());
+  Done();
+
+  ArrayFromVector<UInt64Type, uint64_t>(expected_values, &expected_);
+  ASSERT_TRUE(expected_->Equals(result_));
+}
+
+// ----------------------------------------------------------------------
+// Dictionary tests
+
+template <typename Type>
+class TestDictionaryBuilder : public TestBuilder {};
+
+typedef ::testing::Types<Int8Type, UInt8Type, Int16Type, UInt16Type, Int32Type,
+    UInt32Type, Int64Type, UInt64Type, FloatType, DoubleType>
+    PrimitiveDictionaries;
+
+TYPED_TEST_CASE(TestDictionaryBuilder, PrimitiveDictionaries);
+
+TYPED_TEST(TestDictionaryBuilder, Basic) {
+  DictionaryBuilder<TypeParam> builder(default_memory_pool());
+  ASSERT_OK(builder.Append(static_cast<typename TypeParam::c_type>(1)));
+  ASSERT_OK(builder.Append(static_cast<typename TypeParam::c_type>(2)));
+  ASSERT_OK(builder.Append(static_cast<typename TypeParam::c_type>(1)));
+
+  std::shared_ptr<Array> result;
+  ASSERT_OK(builder.Finish(&result));
+
+  // Build expected data
+  NumericBuilder<TypeParam> dict_builder(default_memory_pool());
+  ASSERT_OK(dict_builder.Append(static_cast<typename TypeParam::c_type>(1)));
+  ASSERT_OK(dict_builder.Append(static_cast<typename TypeParam::c_type>(2)));
+  std::shared_ptr<Array> dict_array;
+  ASSERT_OK(dict_builder.Finish(&dict_array));
+  auto dtype =
+      std::make_shared<DictionaryType>(std::make_shared<TypeParam>(), dict_array);
+
+  UInt8Builder int_builder(default_memory_pool());
+  ASSERT_OK(int_builder.Append(0));
+  ASSERT_OK(int_builder.Append(1));
+  ASSERT_OK(int_builder.Append(0));
+  std::shared_ptr<Array> int_array;
+  ASSERT_OK(int_builder.Finish(&int_array));
+
+  DictionaryArray expected(dtype, int_array);
+  ASSERT_TRUE(expected.Equals(result));
+}
+
+TYPED_TEST(TestDictionaryBuilder, DoubleTableSize) {
+  using Scalar = typename TypeParam::c_type;
+  // Skip this test for (u)int8
+  if (sizeof(Scalar) > 1) {
+    // Build the dictionary Array
+    DictionaryBuilder<TypeParam> builder(default_memory_pool());
+    // Build expected data
+    NumericBuilder<TypeParam> dict_builder(default_memory_pool());
+    UInt16Builder int_builder(default_memory_pool());
+
+    // Fill with 1024 different values
+    for (int64_t i = 0; i < 1024; i++) {
+      ASSERT_OK(builder.Append(static_cast<Scalar>(i)));
+      ASSERT_OK(dict_builder.Append(static_cast<Scalar>(i)));
+      ASSERT_OK(int_builder.Append(static_cast<uint16_t>(i)));
+    }
+    // Fill with an already existing value
+    for (int64_t i = 0; i < 1024; i++) {
+      ASSERT_OK(builder.Append(static_cast<Scalar>(1)));
+      ASSERT_OK(int_builder.Append(1));
+    }
+
+    // Finalize result
+    std::shared_ptr<Array> result;
+    ASSERT_OK(builder.Finish(&result));
+
+    // Finalize expected data
+    std::shared_ptr<Array> dict_array;
+    ASSERT_OK(dict_builder.Finish(&dict_array));
+    auto dtype =
+        std::make_shared<DictionaryType>(std::make_shared<TypeParam>(), dict_array);
+    std::shared_ptr<Array> int_array;
+    ASSERT_OK(int_builder.Finish(&int_array));
+
+    DictionaryArray expected(dtype, int_array);
+    ASSERT_TRUE(expected.Equals(result));
+  }
+}
+
+TEST(TestStringDictionaryBuilder, Basic) {
+  // Build the dictionary Array
+  StringDictionaryBuilder builder(default_memory_pool());
+  ASSERT_OK(builder.Append("test"));
+  ASSERT_OK(builder.Append("test2"));
+  ASSERT_OK(builder.Append("test"));
+
+  std::shared_ptr<Array> result;
+  ASSERT_OK(builder.Finish(&result));
+
+  // Build expected data
+  StringBuilder str_builder(default_memory_pool());
+  ASSERT_OK(str_builder.Append("test"));
+  ASSERT_OK(str_builder.Append("test2"));
+  std::shared_ptr<Array> str_array;
+  ASSERT_OK(str_builder.Finish(&str_array));
+  auto dtype = std::make_shared<DictionaryType>(utf8(), str_array);
+
+  UInt8Builder int_builder(default_memory_pool());
+  ASSERT_OK(int_builder.Append(0));
+  ASSERT_OK(int_builder.Append(1));
+  ASSERT_OK(int_builder.Append(0));
+  std::shared_ptr<Array> int_array;
+  ASSERT_OK(int_builder.Finish(&int_array));
+
+  DictionaryArray expected(dtype, int_array);
+  ASSERT_TRUE(expected.Equals(result));
+}
+
+TEST(TestStringDictionaryBuilder, DoubleTableSize) {
+  // Build the dictionary Array
+  StringDictionaryBuilder builder(default_memory_pool());
+  // Build expected data
+  StringBuilder str_builder(default_memory_pool());
+  UInt16Builder int_builder(default_memory_pool());
+
+  // Fill with 1024 different values
+  for (int64_t i = 0; i < 1024; i++) {
+    std::stringstream ss;
+    ss << "test" << i;
+    ASSERT_OK(builder.Append(ss.str()));
+    ASSERT_OK(str_builder.Append(ss.str()));
+    ASSERT_OK(int_builder.Append(static_cast<uint16_t>(i)));
+  }
+  // Fill with an already existing value
+  for (int64_t i = 0; i < 1024; i++) {
+    ASSERT_OK(builder.Append("test1"));
+    ASSERT_OK(int_builder.Append(1));
+  }
+
+  // Finalize result
+  std::shared_ptr<Array> result;
+  ASSERT_OK(builder.Finish(&result));
+
+  // Finalize expected data
+  std::shared_ptr<Array> str_array;
+  ASSERT_OK(str_builder.Finish(&str_array));
+  auto dtype = std::make_shared<DictionaryType>(utf8(), str_array);
+  std::shared_ptr<Array> int_array;
+  ASSERT_OK(int_builder.Finish(&int_array));
+
+  DictionaryArray expected(dtype, int_array);
+  ASSERT_TRUE(expected.Equals(result));
 }
 
 // ----------------------------------------------------------------------

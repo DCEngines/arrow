@@ -115,6 +115,7 @@ public class ListVector extends BaseRepeatedValueVector implements FieldVector, 
     // variable width values: truncate offset vector buffer to size (#1)
     org.apache.arrow.vector.BaseDataValueVector.truncateBufferBasedOnSize(ownBuffers, 1, offsets.getBufferSizeFor(fieldNode.getLength() + 1));
     BaseDataValueVector.load(fieldNode, getFieldInnerVectors(), ownBuffers);
+    lastSet = fieldNode.getLength();
   }
 
   @Override
@@ -311,7 +312,7 @@ public class ListVector extends BaseRepeatedValueVector implements FieldVector, 
 
   @Override
   public UnionVector promoteToUnion() {
-    UnionVector vector = new UnionVector(name, allocator, callBack);
+    UnionVector vector = new UnionVector("$data$", allocator, callBack);
     replaceDataVector(vector);
     reader = new UnionListReader(this);
     if (callBack != null) {
